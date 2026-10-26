@@ -2,7 +2,5 @@
 #include "TelemetryState.h"
 #include <common/mavlink.h>
 
-class TelemetryProcessor {
-public:
-    bool Convert(const mavlink_global_position_int_t& src, TelemetryState& result) const;
-};
+// Returns false for invalid coordinates/heading and leaves result unchanged.
+bool ConvertPosition(const mavlink_global_position_int_t& src, TelemetryState& result);

@@ -1,5 +1,6 @@
 #include "TelemetryGateway.h"
 #include "TelemetryService.h"
+#include "TelemetryStateSubscriber.h"
 #include <grpcpp/grpcpp.h>
 #include <chrono>
 #include <csignal>
@@ -7,6 +8,7 @@
 #include <thread>
 
 namespace {
+// Signal handlers only set a flag; main performs cleanup outside signal context.
 volatile std::sig_atomic_t stop_requested = 0;
 void HandleSignal(int) { stop_requested = 1; }
 }
@@ -15,7 +17,8 @@ int main() {
     std::signal(SIGTERM, HandleSignal);
     try {
         StateStore store;
-        TelemetryGateway gateway(store);
+        TelemetryGateway gateway;
+        TelemetryStateSubscriber telemetry(gateway, store);
         TelemetryServiceImpl service(store);
         grpc::ServerBuilder builder;
         builder.AddListeningPort("0.0.0.0:50051", grpc::InsecureServerCredentials());
@@ -25,16 +28,19 @@ int main() {
         std::cout << "GCS Core listening UDP=0.0.0.0:14550 gRPC=0.0.0.0:50051" << std::endl;
         std::cout << "LINK WAITING - no valid GLOBAL_POSITION_INT yet" << std::endl;
         gateway.Start();
+        // Supervise shutdown only; reception and callbacks run on their own threads.
         while (!stop_requested && !gateway.Failed())
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        // Stop streams, drain gateway callbacks, then cancel remaining RPCs.
         service.Stop();
         gateway.Stop();
         server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(1));
         server->Wait();
-        std::cout << "GCS Core stopped" << std::endl;
+        std::cout << (gateway.Failed() ? "GCS Core stopped: telemetry gateway failed"
+                                      : "GCS Core stopped") << std::endl;
         return gateway.Failed() ? 1 : 0;
     } catch (const std::exception& error) {
-        std::cerr << "GCS Core startup failed: " << error.what() << std::endl;
+        std::cerr << "GCS Core failed: " << error.what() << std::endl;
         return 1;
     }
 }

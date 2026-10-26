@@ -10,26 +10,27 @@ void Check(bool ok, const char* reason) {
 }
 int main() {
     try {
-        TelemetryProcessor processor;
         mavlink_global_position_int_t wire{};
         wire.lat = 320000000; wire.lon = 348000000;
         wire.alt = 100000; wire.relative_alt = 50000;
         wire.vx = -300; wire.vy = 400; wire.hdg = 9000;
         TelemetryState value;
-        Check(processor.Convert(wire, value), "valid position rejected");
+        Check(ConvertPosition(wire, value), "valid position rejected");
         Check(value.latitude_deg == 32 && value.longitude_deg == 34.8 &&
               value.altitude_msl_m == 100 && value.relative_alt_m == 50 &&
               value.speed_mps == 5 && value.heading_deg == 90, "incorrect units");
+        const auto accepted_latitude = value.latitude_deg;
         wire.lat = 900000001;
-        Check(!processor.Convert(wire, value), "invalid latitude accepted");
+        Check(!ConvertPosition(wire, value), "invalid latitude accepted");
+        Check(value.latitude_deg == accepted_latitude, "invalid input modified result");
         wire.lat = -900000000; wire.lon = -1800000000; wire.hdg = 35999;
-        Check(processor.Convert(wire, value), "valid boundaries rejected");
+        Check(ConvertPosition(wire, value), "valid boundaries rejected");
         wire.lon = -1800000001;
-        Check(!processor.Convert(wire, value), "invalid longitude accepted");
+        Check(!ConvertPosition(wire, value), "invalid longitude accepted");
         wire.lon = 0; wire.hdg = 65535;
-        Check(!processor.Convert(wire, value), "unknown heading accepted");
+        Check(!ConvertPosition(wire, value), "unknown heading accepted");
         wire.hdg = 36000;
-        Check(!processor.Convert(wire, value), "invalid heading accepted");
+        Check(!ConvertPosition(wire, value), "invalid heading accepted");
         StateStore store;
         Check(!store.GetSnapshot().has_data && store.GetSnapshot().revision == 0,
               "initial store not waiting");
@@ -52,6 +53,8 @@ int main() {
         }
         writer.join();
         Check(store.GetSnapshot().revision == 10002, "lost updates");
+        store.Update(value, std::chrono::steady_clock::now() - std::chrono::seconds(3));
+        Check(store.GetSnapshot().stale, "dispatch delay refreshed receipt timestamp");
         std::cout << "Processor and StateStore checks passed\n";
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

@@ -180,28 +180,128 @@ production-secure or flight-control deployment.
 
 ## Implementation
 
-The handwritten runtime has four classes and two small data structs:
+The runtime separates asynchronous transport, event delivery, and application processing:
 
 | Files | Responsibility |
 | --- | --- |
-| `main.cpp` | Startup, signals, service lifecycle, bounded shutdown |
-| `TelemetryGateway.h/.cpp` | One nonblocking Boost.Asio UDP receive thread, official MAVLink parser, stdout and status transition logs |
-| `TelemetryProcessor.h/.cpp` | Validate coordinates/heading and convert integer MAVLink units |
+| `main.cpp` | Component wiring, startup, signals, service lifecycle and shutdown |
+| `TelemetryStateSubscriber.h/.cpp` | Owns the subscription, position conversion, StateStore updates and existing stdout/LIVE/STALE display |
+| `TelemetryGateway.h/.cpp` | Async UDP receive and timer on one Asio thread; per-endpoint parser and per-source sequence validation |
+| `TelemetryEvents.h`, `TelemetrySubscriptions.h/.cpp` | Owned immutable events, ordered observer dispatch, RAII subscription handles |
+| `TelemetryProcessor.h/.cpp` | `ConvertPosition` validates coordinates/heading and converts MAVLink units |
 | `TelemetryState.h`, `StateStore.h` | Latest state, revision, monotonic receipt timestamp, one mutex; snapshots copied out of the lock |
 | `TelemetryService.h/.cpp`, `proto/telemetry.proto` | Actual synchronous gRPC snapshot and event stream |
 | `CMakeLists.txt`, `Dockerfile`, `.dockerignore`, `.gitignore` | Build, generated protocol sources, container packaging |
 | `third_party/` | Pinned official MAVLink generated C headers |
 | `tests/core_tests.cpp` | Conversion, validation, stale retention/recovery and concurrent snapshot checks |
+| `tests/gateway_tests.cpp` | Real async UDP, raw capture, sequence ordering/wraparound, observer lifetime and shutdown tests |
 | `tests/integration.py`, `tests/send_frames.py` | Docker/simulator/host-grpcurl acceptance checks and repeatable malformed-frame fixture |
 
-Only `GLOBAL_POSITION_INT` from system 1/component 1 updates state. The official
-parser verifies framing/CRC and consumes bytes across datagram boundaries.
-Heartbeat and attitude are ignored. Latitude/longitude outside geographic bounds
+Only validated, in-order `GLOBAL_POSITION_INT` from system 1/component 1 updates
+application state. The gateway publishes all validated in-order message types;
+the state subscriber ignores heartbeat and attitude. The official parser
+verifies framing/CRC and consumes bytes across datagram boundaries, with separate
+parser state for each UDP endpoint. Latitude/longitude outside geographic bounds
 and heading >=36000 (including unknown 65535) are skipped without refreshing
 liveness. Altitudes are converted from mm, north/east velocity from cm/s, heading
 from centidegrees, and speed is the horizontal vector magnitude. Boot time is
-not used for ordering or wall-clock time. There is no queue, history, observer
-registry, logging thread, or asynchronous gRPC framework.
+not used for ordering or wall-clock time. There is no telemetry history, new recorder/logger service, or asynchronous gRPC
+framework. An observer dispatcher delivers gateway events separately from Asio.
+
+## Async gateway and observer contract
+
+`TelemetryGateway` has no dependency on StateStore, the processor, stdout, or gRPC.
+`main.cpp` constructs `TelemetryStateSubscriber`, which owns the existing application
+callback and its subscription handle. Its destructor unregisters and waits for any
+active callback before destroying its state. Future consumers can own separate
+subscriptions without adding their event-handling logic to `main.cpp`. The gateway
+uses `async_receive_from()` with owned buffer/endpoint members and an async
+100 ms `steady_timer`; its I/O thread runs `io_context::run()` with no polling or
+sleep loop. Timer ticks let the application check stale position state even when
+no network traffic arrives. StateStore retains the gateway's monotonic receive
+completion timestamp, so time waiting in the callback queue does not refresh a
+sample's age. gRPC's existing 200 ms latest-state subscription behavior is unchanged.
+
+```cpp
+TelemetryGateway gateway;
+auto subscription = gateway.Subscribe([](TelemetrySubscriptions::Event event) {
+    if (event->kind == TelemetryEvent::Kind::Message) {
+        // Read event->message. Retain the shared pointer if needed later.
+    }
+});
+gateway.Start();
+// ...
+gateway.Stop();
+```
+
+Keep the subscription handle alive while subscribed. `Reset()` or destruction
+unregisters it and waits for any callback currently executing on another thread.
+Queued callbacks for that handle are skipped after reset. Self-unsubscription
+is supported. Reset before destroying objects captured by reference; do not hold
+locks that the callback needs while resetting. Different subscriptions can be
+registered/reset concurrently, but access to the same movable handle must be
+externally serialized. Handles may outlive the gateway.
+
+Events are `shared_ptr<const TelemetryEvent>` values; neither datagrams nor MAVLink
+messages reference the reusable socket buffer. All subscribers execute serially
+on one dispatcher thread. Publication snapshots the current subscriptions, so a
+new subscriber does not receive old queued events. No callback runs while the
+registry/queue mutex is held. Exceptions are caught per callback; remaining
+subscribers still run, and `CallbackErrors()` exposes the cumulative error count.
+Callbacks should return promptly and must not destroy the gateway. `Start()` and
+`Stop()` are owner-thread lifecycle operations; callbacks can use `RequestStop()`
+to cancel I/O, followed by an owner-thread `Stop()` to join and drain delivery.
+
+| Event kind | Meaning |
+| --- | --- |
+| `RawDatagram` | Every successful UDP receive, including empty, corrupt, duplicate, late and irrelevant traffic; owned bytes, sender address/port and monotonic timestamp |
+| `Message` | CRC-valid, accepted MAVLink message of any type/source; includes expected sequence and forward gap count |
+| `SequenceRejected` | CRC-valid message rejected as duplicate or out of order; retains the message, source and expected sequence |
+| `Tick` | Timer notification for freshness checks; no packet is needed |
+| `ReceiveError` | Fatal receive/handler error; `Failed()` also reports failure |
+
+Raw events are enqueued **before** parsing or filtering their datagram. The single
+FIFO dispatcher preserves raw-before-message delivery for each subscriber;
+callbacks run asynchronously, so raw publication does not wait for a recorder to
+finish before parsing. Multiple frames may follow one raw event, and a split
+frame is associated with the endpoint/timestamp of its completing datagram.
+Only complete CRC-valid frames affect sequence state.
+
+Sequence state is keyed by `(UDP address, UDP port, MAVLink system ID, component ID)`
+and spans all message IDs, because MAVLink sequence numbers are not per message
+type. The first frame establishes a baseline. Subsequent frames use 8-bit modular
+difference from the last accepted sequence:
+
+- Difference 1 through 127: accept, report `missing_messages = difference - 1`,
+  and advance the baseline. Gaps do not trigger retransmission or reordering.
+- Difference 0: reject as duplicate.
+- Difference 128 through 255: reject. A 128-entry sliding history distinguishes
+  previously accepted duplicates from unseen out-of-order frames.
+- `254, 255, 0, 1` is normal forward progression. A late missing packet is rejected
+  rather than replacing the newer state.
+
+An 8-bit counter alone cannot distinguish an old frame from a large forward jump
+or sender reboot. Exactly half-range is rejected conservatively. After **five
+seconds without an accepted message** for a source, its next valid frame
+establishes a new baseline. This is a documented recovery
+heuristic: an old duplicate after that idle period can be accepted. A changed UDP
+source port naturally starts a separate source. Inactive endpoint parser/sequence
+state is removed after 30 seconds. The constructor accepts a different idle-reset
+interval when the deployment requires it.
+
+Shutdown cancels the socket/timer on the I/O thread, joins it, then drains queued
+observer events. Repeated `Stop()` calls and stop-before-start are safe. A gateway
+is single-use; construct a new one rather than calling `Start()` again.
+
+**Capacity limits:** the dispatcher holds at most 1,024 queued events, plus the
+current delivery. If full, publication throws and the gateway stops with `Failed()`
+set; queued events still drain. The overflowing event is not queued, so overload
+ends capture rather than silently continuing with gaps. A `ReceiveError` event is
+best-effort when the queue is full; the process still reports failure and exits 1.
+A slow subscriber delays other subscribers; a callback that never returns prevents
+drain/unsubscription from finishing. This does not guarantee durable recording or
+capture of packets the OS drops. Sender state is idle-expired but not hard-capped.
+Network identities and CRC are not authentication.
 
 ## Repeat the checks
 
@@ -270,3 +370,14 @@ All acceptance scenarios passed:
 No remaining blocker for the verified shared-network Docker slice. Native-host
 UDP forwarding remains unverified as described above. WPF integration, other
 architectures and production hardening were not implemented or tested.
+
+### Async refactor validation
+
+The native macOS build and Debian C++14 Docker build pass. Focused real-UDP tests
+cover first-frame acceptance, duplicates, backward/ambiguous sequences, gaps,
+8-bit wraparound, per-source/per-endpoint and per-gateway parser isolation,
+coalesced/split frames, malformed and empty raw datagrams, CRC recovery, idle
+resynchronization, timer delivery without packets, callback exceptions, self-
+unsubscription, concurrent unsubscribe waiting for active callbacks, slow
+subscriber isolation from Asio, bounded dispatch overflow, and idempotent shutdown. The existing native
+simulator smoke test and full Docker/gRPC acceptance suite also pass.

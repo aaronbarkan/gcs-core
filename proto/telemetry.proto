@@ -18,12 +18,14 @@ message TelemetryData {
   double heading_deg = 6;
 }
 message TelemetryEvent {
+  // Accepted state-update count; resets when Core restarts.
   uint64 revision = 1;
   LinkStatus status = 2;
   // Absent for WAITING; last known sample for LIVE and STALE.
   TelemetryData telemetry = 3;
 }
 service TelemetryService {
+  // NOT_FOUND until the first position; otherwise returns LIVE or STALE data.
   rpc GetTelemetry(GetTelemetryRequest) returns (TelemetryEvent);
   // Latest-state stream: intermediate packets may be coalesced.
   rpc SubscribeTelemetry(SubscribeTelemetryRequest) returns (stream TelemetryEvent);

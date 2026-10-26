@@ -3,15 +3,19 @@
 #include <chrono>
 #include <mutex>
 
+// Mutex-protected latest sample shared by the subscriber and gRPC handlers.
 class StateStore {
 public:
-    void Update(const TelemetryState& value) {
+    // Preserve receive time so dispatch delays do not make old samples look fresh.
+    void Update(const TelemetryState& value,
+                std::chrono::steady_clock::time_point received = std::chrono::steady_clock::now()) {
         std::lock_guard<std::mutex> lock(mutex_);
         latest_.state = value;
         latest_.has_data = true;
         ++latest_.revision;
-        last_receive_ = std::chrono::steady_clock::now();
+        last_receive_ = received;
     }
+    // Compute freshness at read time; retain the last value after two seconds of silence.
     Snapshot GetSnapshot() const {
         std::lock_guard<std::mutex> lock(mutex_);
         Snapshot result = latest_;

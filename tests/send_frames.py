@@ -7,8 +7,10 @@ from pymavlink.dialects.v20 import common as mavlink
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 encoder = mavlink.MAVLink(None, srcSystem=1, srcComponent=1)
 def frame(lat=320000000, lon=348000000, hdg=9000):
-    return mavlink.MAVLink_global_position_int_message(
+    packet = mavlink.MAVLink_global_position_int_message(
         0, lat, lon, 100000, 50000, -300, 400, 0, hdg).pack(encoder)
+    encoder.seq = (encoder.seq + 1) % 256
+    return packet
 def send(data):
     sock.sendto(data, ('gcs-core', 14550))
 
@@ -31,7 +33,9 @@ elif mode == 'heartbeat':
     # Valid traffic must not refresh position liveness.
     for _ in range(30):
         send(mavlink.MAVLink_heartbeat_message(2, 0, 128, 0, 4, 3).pack(encoder))
+        encoder.seq = (encoder.seq + 1) % 256
         send(mavlink.MAVLink_attitude_message(0, 0, 0, 1.57, 0, 0, 0).pack(encoder))
+        encoder.seq = (encoder.seq + 1) % 256
         time.sleep(0.1)
 elif mode == 'valid':
     # Both coalesced frames and a frame split across datagrams.

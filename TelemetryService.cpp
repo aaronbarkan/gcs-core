@@ -30,6 +30,7 @@ grpc::Status TelemetryServiceImpl::GetTelemetry(
 grpc::Status TelemetryServiceImpl::SubscribeTelemetry(
     grpc::ServerContext* context, const gcs::v1::SubscribeTelemetryRequest*,
     grpc::ServerWriter<gcs::v1::TelemetryEvent>* writer) {
+    // Each RPC has its own cursor; slow clients may skip intermediate revisions.
     bool first = true;
     std::uint64_t last_revision = 0;
     auto last_status = gcs::v1::WAITING;

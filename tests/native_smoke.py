@@ -65,7 +65,7 @@ with tempfile.TemporaryFile() as logs, tempfile.TemporaryFile() as events:
         sim.stdin.flush()
         wait_for(lambda: snapshot()['status'] == 'STALE')
         wait_for(lambda: 'STALE' in read(events))
-        assert 'LINK STALE' in read(logs)
+        wait_for(lambda: 'LINK STALE' in read(logs))
         stale = snapshot()
         assert stale['telemetry']['speedMps'] == 5
         sim.stdin.write('resume\n')
