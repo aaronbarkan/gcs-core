@@ -1,0 +1,30 @@
+syntax = "proto3";
+package gcs.v1;
+option csharp_namespace = "Gcs.Client";
+
+message GetTelemetryRequest {}
+message SubscribeTelemetryRequest {}
+enum LinkStatus {
+  WAITING = 0;
+  LIVE = 1;
+  STALE = 2;
+}
+message TelemetryData {
+  double latitude_deg = 1;
+  double longitude_deg = 2;
+  double altitude_msl_m = 3;
+  double relative_alt_m = 4;
+  double speed_mps = 5;
+  double heading_deg = 6;
+}
+message TelemetryEvent {
+  uint64 revision = 1;
+  LinkStatus status = 2;
+  // Absent for WAITING; last known sample for LIVE and STALE.
+  TelemetryData telemetry = 3;
+}
+service TelemetryService {
+  rpc GetTelemetry(GetTelemetryRequest) returns (TelemetryEvent);
+  // Latest-state stream: intermediate packets may be coalesced.
+  rpc SubscribeTelemetry(SubscribeTelemetryRequest) returns (stream TelemetryEvent);
+}
