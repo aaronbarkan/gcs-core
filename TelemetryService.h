@@ -13,7 +13,7 @@ public:
     grpc::Status GetTelemetry(grpc::ServerContext* context,
                               const gcs::v1::GetTelemetryRequest* request,
                               gcs::v1::TelemetryEvent* response) override;
-    // Sends the initial snapshot, then changed revision/status at 200 ms intervals.
+    // Sends the initial snapshot, then changed revision/status at 50 ms intervals (20 Hz).
     grpc::Status SubscribeTelemetry(grpc::ServerContext* context,
                                     const gcs::v1::SubscribeTelemetryRequest* request,
                                     grpc::ServerWriter<gcs::v1::TelemetryEvent>* writer) override;

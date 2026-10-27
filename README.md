@@ -201,7 +201,7 @@ zero values such as hover speed, revision 0, and WAITING in JSON output.
 - Unary returns `NOT_FOUND` until the first accepted position, then LIVE or
   STALE with the latest values.
 - A stream immediately emits WAITING, LIVE, or STALE. It polls the store every
-  200 ms and emits only when revision or status changes. STALE includes the last
+  50 ms (20 Hz) and emits only when revision or status changes. STALE includes the last
   sample; WAITING has no telemetry. Multiple clients have independent cursors.
 - This is a latest-state stream, not packet history. Intermediate revisions or
   transitions shorter than the polling interval can be coalesced. Revisions
@@ -257,7 +257,7 @@ uses `async_receive_from()` with owned buffer/endpoint members and an async
 sleep loop. Timer ticks let the application check stale position state even when
 no network traffic arrives. StateStore retains the gateway's monotonic receive
 completion timestamp, so time waiting in the callback queue does not refresh a
-sample's age. gRPC's existing 200 ms latest-state subscription behavior is unchanged.
+sample's age. gRPC checks the latest state every 50 ms (20 Hz), emitting only changes.
 
 ```cpp
 TelemetryGateway gateway;
