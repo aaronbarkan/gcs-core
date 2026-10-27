@@ -83,6 +83,42 @@ and generated Protobuf headers exist. If old include errors remain, run
 **C/C++: Reset IntelliSense Database** followed by **Developer: Reload Window**
 from VS Code's Command Palette.
 
+## Telemetry log
+
+Core creates `telemetry.log` in its working directory and **overwrites it on each
+startup**. `TelemetryLogger` subscribes independently of the StateStore consumer
+and writes one [RFC 5424](https://www.rfc-editor.org/rfc/rfc5424.html) syslog message
+per event. The header uses UTC wall time at logging, facility `user`, application
+`gcs-core`, and the process ID; unavailable hostname and structured data use `-`.
+
+```bash
+tail -f telemetry.log
+```
+
+Raw datagrams (including malformed/empty input) are logged as hex at debug
+severity. Accepted MAVLink messages include source, IDs, sequence, gap count and
+payload hex at informational severity. Position messages also include decoded
+integer fields with units in their names. Sequence rejections use warning
+severity and include the reason; receive errors use error severity. Timer ticks
+are logged at debug severity. Raw events precede their parsed message events.
+
+The existing dispatcher performs file writes and flushes each line; no additional
+thread or queue is created. Slow storage can fill the existing bounded event
+queue and stop reception. File-open errors abort startup; write failures are
+reported on stderr and cause Core to shut down with exit code 1. On normal
+shutdown, queued events drain before the logger unsubscribes and closes its file.
+The file grows during a run; there is no rotation or durability guarantee across
+a system crash.
+
+In the Docker image the working directory is `/`, so the log is `/telemetry.log`:
+
+```bash
+docker exec gcs-core tail -f /telemetry.log
+docker cp gcs-core:/telemetry.log ./telemetry.log
+```
+
+Copy it before removing the container if you want to retain it.
+
 ## Run: shared Docker network (verified on this machine)
 
 This topology works with the current macOS/Colima setup. Build the simulator
@@ -189,6 +225,7 @@ The runtime separates asynchronous transport, event delivery, and application pr
 | `TelemetryGateway.h/.cpp` | Async UDP receive and timer on one Asio thread; per-endpoint parser and per-source sequence validation |
 | `TelemetryEvents.h`, `TelemetrySubscriptions.h/.cpp` | Owned immutable events, ordered observer dispatch, RAII subscription handles |
 | `TelemetryProcessor.h/.cpp` | `ConvertPosition` validates coordinates/heading and converts MAVLink units |
+| `TelemetryLogger.h/.cpp` | RFC 5424 file subscriber; truncates the log at startup |
 | `TelemetryState.h`, `StateStore.h` | Latest state, revision, monotonic receipt timestamp, one mutex; snapshots copied out of the lock |
 | `TelemetryService.h/.cpp`, `proto/telemetry.proto` | Actual synchronous gRPC snapshot and event stream |
 | `CMakeLists.txt`, `Dockerfile`, `.dockerignore`, `.gitignore` | Build, generated protocol sources, container packaging |

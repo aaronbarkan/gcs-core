@@ -1,4 +1,5 @@
 #include "TelemetryGateway.h"
+#include "TelemetryLogger.h"
 #include "TelemetryService.h"
 #include "TelemetryStateSubscriber.h"
 #include <grpcpp/grpcpp.h>
@@ -18,6 +19,7 @@ int main() {
     try {
         StateStore store;
         TelemetryGateway gateway;
+        TelemetryLogger logger(gateway);
         TelemetryStateSubscriber telemetry(gateway, store);
         TelemetryServiceImpl service(store);
         grpc::ServerBuilder builder;
@@ -29,16 +31,16 @@ int main() {
         std::cout << "LINK WAITING - no valid GLOBAL_POSITION_INT yet" << std::endl;
         gateway.Start();
         // Supervise shutdown only; reception and callbacks run on their own threads.
-        while (!stop_requested && !gateway.Failed())
+        while (!stop_requested && !gateway.Failed() && !logger.Failed())
             std::this_thread::sleep_for(std::chrono::milliseconds(50));
         // Stop streams, drain gateway callbacks, then cancel remaining RPCs.
         service.Stop();
         gateway.Stop();
         server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(1));
         server->Wait();
-        std::cout << (gateway.Failed() ? "GCS Core stopped: telemetry gateway failed"
+        std::cout << (gateway.Failed() || logger.Failed() ? "GCS Core stopped: telemetry service failed"
                                       : "GCS Core stopped") << std::endl;
-        return gateway.Failed() ? 1 : 0;
+        return gateway.Failed() || logger.Failed() ? 1 : 0;
     } catch (const std::exception& error) {
         std::cerr << "GCS Core failed: " << error.what() << std::endl;
         return 1;
