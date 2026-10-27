@@ -3,16 +3,17 @@
 #include <array>
 #include <atomic>
 #include <bitset>
+#include <boost/asio.hpp>
 #include <map>
 #include <thread>
-#include <boost/asio.hpp>
 
 // Async UDP transport: publish raw bytes first, then validated MAVLink events.
 // Parsing/timers run on one Asio thread; consumers run on a separate dispatcher.
 class TelemetryGateway {
 public:
     // Binds immediately; port 0 requests an OS-selected port (useful in tests).
-    explicit TelemetryGateway(std::uint16_t port = 14550,
+    explicit TelemetryGateway(
+        std::uint16_t port = 14550,
         std::chrono::milliseconds sequence_idle_reset = std::chrono::seconds(5));
     ~TelemetryGateway();
     // Keep the returned handle alive to keep receiving events.
@@ -25,9 +26,16 @@ public:
     void Stop();
     // Safe from callbacks; the owner must still call Stop to join threads.
     void RequestStop();
-    bool Failed() const { return failed_.load(); }
-    std::uint16_t Port() const { return port_; }
-    std::uint64_t CallbackErrors() const { return events_.CallbackErrors(); }
+    bool Failed() const {
+        return failed_.load();
+    }
+    std::uint16_t Port() const {
+        return port_;
+    }
+    std::uint64_t CallbackErrors() const {
+        return events_.CallbackErrors();
+    }
+
 private:
     struct Sequence {
         std::uint8_t last = 0;
@@ -43,7 +51,8 @@ private:
     void ReceiveNext();
     void ScheduleTick();
     void ProcessDatagram(std::size_t count, std::chrono::steady_clock::time_point received);
-    void AcceptMessage(Sender& sender, const mavlink_message_t& message,
+    void AcceptMessage(Sender& sender,
+                       const mavlink_message_t& message,
                        std::chrono::steady_clock::time_point received);
     void Close() noexcept;
     void Fail(const std::string& error) noexcept;

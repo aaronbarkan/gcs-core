@@ -1,0 +1,16 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug gcs-core",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build-mac/gcs-core",
+      "cwd": "${workspaceFolder}",
+      "MIMode": "lldb",
+      "stopAtEntry": false,
+      "externalConsole": false,
+      "preLaunchTask": "CMake: build Debug"
+    }
+  ]
+}
